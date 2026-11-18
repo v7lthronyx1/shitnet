@@ -1,0 +1,42 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shitnet"
+version = "1.0.0"
+description = "Automated ISP Censorship, DPI Forensics, QoS Diagnostics & Legal Evidence Generator by V7lthronyx"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+  {name = "Aiden Azad"}
+]
+requires-python = ">=3.10"
+dependencies = [
+  "dnspython>=2.4.0",
+  "requests>=2.31.0",
+  "aioquic>=1.0.0",
+  "scipy>=1.11.0",
+  "matplotlib>=3.8.0",
+  "numpy>=1.26.0",
+  "weasyprint>=60.0",
+  "Pillow>=10.0.0",
+]
+
+[project.scripts]
+shitnet = "shitnet.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/v7lthronyx1/shitnet"
+Repository = "https://github.com/v7lthronyx1/shitnet"
+Author = "https://github.com/v7lthronyx1"
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["shitnet*"]
+
+[tool.setuptools.package-data]
+shitnet = ["fonts/*.ttf"]
