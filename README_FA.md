@@ -87,6 +87,12 @@ sudo .venv/bin/shitnet run --mode two-phase --conn-type "Wi-Fi"
 .venv/bin/shitnet run --mode two-phase --compare ./audits/session_old_1 ./audits/session_old_2
 ```
 
+### ممیزی کارت شبکه اپراتور از پشت VPN فعال (بدون تغییر جدول مسیر)
+
+```bash
+.venv/bin/shitnet run --mode dual --iface eth0 --control-dns 127.0.2.1 --no-auto-route --conn-type "Ethernet / USB Tether"
+```
+
 ### تولید مجدد گزارش، PDF و اسلایدهای شبکه اجتماعی از روی داده‌های موجود
 
 ```bash

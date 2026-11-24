@@ -6,6 +6,7 @@ import ssl
 import struct
 import time
 from datetime import datetime, timezone
+from ..netenv import bind_socket
 from ..targets import EVASION_TARGETS, FALLBACK_DOMAIN_IPS, SYNTHETIC_CONTROLS, SYNTHETIC_SNI_DOMAINS
 from . import capture_pcap
 
@@ -65,14 +66,13 @@ def classify_tls_bytes(data):
     return f"DATA_{rtype:#x}"
 
 
-def raw_tls_probe(ip, sni, source_ip=None, mode="normal", port=443, timeout=3.2):
+def raw_tls_probe(ip, sni, source_ip=None, mode="normal", port=443, timeout=3.2, iface=None):
     res = {"ok": False, "outcome": None, "tcp_ms": None, "tls_ms": None, "error": None}
     s = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
-        if source_ip:
-            s.bind((source_ip, 0))
+        bind_socket(s, source_ip=source_ip, iface=iface)
         t0 = time.monotonic()
         s.connect((ip, port))
         res["tcp_ms"] = round((time.monotonic() - t0) * 1000.0, 2)
@@ -143,7 +143,7 @@ def raw_tls_probe(ip, sni, source_ip=None, mode="normal", port=443, timeout=3.2)
     return res
 
 
-def https_status_probe(ip, host, source_ip=None, timeout=4.0):
+def https_status_probe(ip, host, source_ip=None, timeout=4.0, iface=None):
     res = {"ok": False, "status": None, "server": None, "cert_cn": None, "snippet": None, "error": None}
     s = None
     try:
@@ -152,8 +152,7 @@ def https_status_probe(ip, host, source_ip=None, timeout=4.0):
         ctx.verify_mode = ssl.CERT_NONE
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
-        if source_ip:
-            s.bind((source_ip, 0))
+        bind_socket(s, source_ip=source_ip, iface=iface)
         s.connect((ip, 443))
         ws = ctx.wrap_socket(s, server_hostname=host)
         cert = ws.getpeercert()
@@ -185,14 +184,13 @@ def https_status_probe(ip, host, source_ip=None, timeout=4.0):
     return res
 
 
-def http_host_probe(ip, host, source_ip=None, timeout=2.8):
+def http_host_probe(ip, host, source_ip=None, timeout=2.8, iface=None):
     res = {"ok": False, "status": None, "block_sig": None, "snippet": None, "error": None}
     s = None
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
-        if source_ip:
-            s.bind((source_ip, 0))
+        bind_socket(s, source_ip=source_ip, iface=iface)
         s.connect((ip, 80))
         req = f"GET / HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0\r\nConnection: close\r\n\r\n".encode("ascii")
         s.sendall(req)
@@ -252,9 +250,9 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, dns_items, domains_pre_ips=None, 
                 continue
             if progress_cb and idx % 20 == 0:
                 progress_cb(f"[Stage 2/6 DPI] Probing {idx + 1}/{len(dns_items)} ({dom})...")
-            isp_tls = raw_tls_probe(real_ip, dom, source_ip=src_ip, mode="normal", timeout=3.0)
-            isp_https = https_status_probe(real_ip, dom, source_ip=src_ip, timeout=3.5) if isp_tls["ok"] else None
-            isp_http = http_host_probe(real_ip, dom, source_ip=src_ip, timeout=2.5)
+            isp_tls = raw_tls_probe(real_ip, dom, source_ip=src_ip, mode="normal", timeout=3.0, iface=isp_iface)
+            isp_https = https_status_probe(real_ip, dom, source_ip=src_ip, timeout=3.5, iface=isp_iface) if isp_tls["ok"] else None
+            isp_http = http_host_probe(real_ip, dom, source_ip=src_ip, timeout=2.5, iface=isp_iface)
             domain_dpi.append({
                 "category": cat,
                 "domain": dom,
@@ -268,9 +266,9 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, dns_items, domains_pre_ips=None, 
             progress_cb("[Stage 2/6 DPI] Running dual-server synthetic SNI trap...")
         synthetic_dual = []
         for sni in SYNTHETIC_SNI_DOMAINS:
-            isp_hetzner = raw_tls_probe(hetzner_ip, sni, source_ip=src_ip, mode="normal", timeout=3.0)
-            isp_vultr = raw_tls_probe(vultr_ip, sni, source_ip=src_ip, mode="normal", timeout=3.0)
-            isp_http_hetzner = http_host_probe(hetzner_ip, sni, source_ip=src_ip, timeout=2.5)
+            isp_hetzner = raw_tls_probe(hetzner_ip, sni, source_ip=src_ip, mode="normal", timeout=3.0, iface=isp_iface)
+            isp_vultr = raw_tls_probe(vultr_ip, sni, source_ip=src_ip, mode="normal", timeout=3.0, iface=isp_iface)
+            isp_http_hetzner = http_host_probe(hetzner_ip, sni, source_ip=src_ip, timeout=2.5, iface=isp_iface)
             synthetic_dual.append({
                 "synthetic_sni": sni,
                 "isp_hetzner": isp_hetzner,
@@ -284,7 +282,7 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, dns_items, domains_pre_ips=None, 
         for host, ip in EVASION_TARGETS:
             row = {"host": host, "ip": ip, "modes": {}}
             for m in evasion_modes:
-                row["modes"][m] = raw_tls_probe(ip, host, source_ip=src_ip, mode=m, timeout=3.5)
+                row["modes"][m] = raw_tls_probe(ip, host, source_ip=src_ip, mode=m, timeout=3.5, iface=isp_iface)
             evasion_matrix.append(row)
 
     return {

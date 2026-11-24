@@ -11,12 +11,13 @@ import dns.message
 import dns.rdatatype
 from aioquic.quic.configuration import QuicConfiguration
 from aioquic.quic.connection import QuicConnection
+from ..netenv import bind_socket
 from ..targets import DOH_SERVERS, DOT_SERVERS, FALLBACK_DOMAIN_IPS, NTP_SERVERS, QUIC_TARGETS, STUN_SERVERS, TCP_PORTS
 from . import capture_pcap, resolve_control_host
 
 
 FALLBACK_PROTO_IPS = {
-    "portquiz.net": "35.180.86.68",
+    "portquiz.net": "13.216.200.40",
     "cloudflare-dns.com": "104.16.248.249",
     "dns.google": "8.8.8.8",
     "dns.quad9.net": "9.9.9.9",
@@ -56,11 +57,10 @@ def resolve_target_ip(host, control_dns="1.1.1.1", can_resolve=False):
     return FALLBACK_PROTO_IPS.get(host)
 
 
-def probe_tcp_port(ip, port, source_ip=None, timeout=2.5):
+def probe_tcp_port(ip, port, source_ip=None, timeout=2.5, iface=None):
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
-    if source_ip:
-        s.bind((source_ip, 0))
+    bind_socket(s, source_ip=source_ip, iface=iface)
     t0 = time.monotonic()
     try:
         s.connect((ip, port))
@@ -71,15 +71,14 @@ def probe_tcp_port(ip, port, source_ip=None, timeout=2.5):
         s.close()
 
 
-def dot_probe(ip, sni, source_ip=None, timeout=3.5):
+def dot_probe(ip, sni, source_ip=None, timeout=3.5, iface=None):
     res = {"tcp_ok": False, "tls_ok": False, "dns_ok": False, "ips": [], "ms": None, "err": None}
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
-    if source_ip:
-        s.bind((source_ip, 0))
+    bind_socket(s, source_ip=source_ip, iface=iface)
     t0 = time.monotonic()
     try:
         s.connect((ip, 853))
@@ -109,13 +108,14 @@ def dot_probe(ip, sni, source_ip=None, timeout=3.5):
     return res
 
 
-def doh_probe(ip, host_hdr, path, source_ip=None):
+def doh_probe(ip, host_hdr, path, source_ip=None, iface=None):
     if not ip:
         return {"ok": False, "err": "dns_resolve_fail"}
+    bind_dev = iface or source_ip
     url = f"https://{host_hdr}{path}?name=example.com&type=A"
     cmd = ["curl", "-4", "-sS", "-k", "--max-time", "5", "--resolve", f"{host_hdr}:443:{ip}", "-H", "Accept: application/dns-json", "-w", "\n%{http_code} %{time_total}"]
-    if source_ip:
-        cmd += ["--interface", source_ip]
+    if bind_dev:
+        cmd += ["--interface", bind_dev]
     cmd.append(url)
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode != 0:
@@ -126,15 +126,14 @@ def doh_probe(ip, host_hdr, path, source_ip=None):
     return {"ok": " 200 " in f" {meta} " or meta.startswith("200"), "meta": meta, "has_answer": ('"Answer"' in body or "93.184." in body or "23.192." in body)}
 
 
-def aioquic_handshake_probe(ip, host, port=443, alpn="h3", source_ip=None, timeout=3.0):
+def aioquic_handshake_probe(ip, host, port=443, alpn="h3", source_ip=None, timeout=3.0, iface=None):
     cfg = QuicConfiguration(is_client=True, alpn_protocols=[alpn], verify_mode=ssl.CERT_NONE)
     cfg.server_name = host
     conn = QuicConnection(configuration=cfg)
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(timeout)
-    if source_ip:
-        s.bind((source_ip, 0))
-    else:
+    bind_socket(s, source_ip=source_ip, iface=iface)
+    if iface or not source_ip:
         s.bind(("0.0.0.0", 0))
     local_addr = s.getsockname()
     try:
@@ -154,10 +153,11 @@ def aioquic_handshake_probe(ip, host, port=443, alpn="h3", source_ip=None, timeo
         s.close()
 
 
-def quic_curl_probe(url, host, ip, source_ip=None):
+def quic_curl_probe(url, host, ip, source_ip=None, iface=None):
+    bind_dev = iface or source_ip
     cmd = ["curl", "-4", "-sS", "-k", "--http3-only", "--max-time", "5", "--resolve", f"{host}:443:{ip}", "-o", "/dev/null", "-w", "%{http_code} %{time_total}"]
-    if source_ip:
-        cmd += ["--interface", source_ip]
+    if bind_dev:
+        cmd += ["--interface", bind_dev]
     cmd.append(url)
     p = subprocess.run(cmd, capture_output=True, text=True)
     if p.returncode == 2:
@@ -165,12 +165,11 @@ def quic_curl_probe(url, host, ip, source_ip=None):
     return {"ok": p.returncode == 0, "rc": p.returncode, "out": p.stdout.strip(), "err": p.stderr.strip()[:140]}
 
 
-def ntp_probe(ip, source_ip=None):
+def ntp_probe(ip, source_ip=None, iface=None):
     pkt = b"\x1b" + (47 * b"\x00")
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(2.5)
-    if source_ip:
-        s.bind((source_ip, 0))
+    bind_socket(s, source_ip=source_ip, iface=iface)
     t0 = time.monotonic()
     try:
         s.sendto(pkt, (ip, 123))
@@ -182,13 +181,12 @@ def ntp_probe(ip, source_ip=None):
         s.close()
 
 
-def stun_probe(ip, port, source_ip=None):
+def stun_probe(ip, port, source_ip=None, iface=None):
     tid = os.urandom(12)
     req = struct.pack("!HHI", 0x0001, 0, 0x2112A442) + tid
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.settimeout(2.5)
-    if source_ip:
-        s.bind((source_ip, 0))
+    bind_socket(s, source_ip=source_ip, iface=iface)
     t0 = time.monotonic()
     try:
         s.sendto(req, (ip, port))
@@ -200,12 +198,13 @@ def stun_probe(ip, port, source_ip=None):
         s.close()
 
 
-def pmtu_sweep(ip, source_ip=None):
+def pmtu_sweep(ip, source_ip=None, iface=None):
     rows = []
+    bind_dev = iface or source_ip
     for sz in [1200, 1400, 1450, 1472, 1473]:
         cmd = ["ping", "-n", "-M", "do", "-s", str(sz), "-c", "2", "-W", "2"]
-        if source_ip:
-            cmd += ["-I", source_ip]
+        if bind_dev:
+            cmd += ["-I", bind_dev]
         cmd.append(ip)
         p = subprocess.run(cmd, capture_output=True, text=True)
         rows.append({"payload_bytes": sz, "wire_mtu": sz + 28, "ok": "2 received" in p.stdout or "1 received" in p.stdout})
@@ -221,16 +220,16 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, control_dns="1.1.1.1", can_resolv
         port_results = []
         if pq_ip:
             for port in TCP_PORTS:
-                port_results.append({"port": port, "isp": probe_tcp_port(pq_ip, port, source_ip=src_ip, timeout=2.5)})
+                port_results.append({"port": port, "isp": probe_tcp_port(pq_ip, port, source_ip=src_ip, timeout=2.5, iface=isp_iface)})
 
         dot_results = []
         for label, ip, sni in DOT_SERVERS:
-            dot_results.append({"label": label, "ip": ip, "sni": sni, "isp": dot_probe(ip, sni, source_ip=src_ip)})
+            dot_results.append({"label": label, "ip": ip, "sni": sni, "isp": dot_probe(ip, sni, source_ip=src_ip, iface=isp_iface)})
 
         doh_results = []
         for label, host_ip, host_hdr, path in DOH_SERVERS:
             ip = resolve_target_ip(host_ip, control_dns, can_resolve)
-            doh_results.append({"label": label, "ip": ip, "host_hdr": host_hdr, "path": path, "isp": doh_probe(ip, host_hdr, path, source_ip=src_ip)})
+            doh_results.append({"label": label, "ip": ip, "host_hdr": host_hdr, "path": path, "isp": doh_probe(ip, host_hdr, path, source_ip=src_ip, iface=isp_iface)})
 
         quic_results = []
         for label, url, host in QUIC_TARGETS:
@@ -246,8 +245,8 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, control_dns="1.1.1.1", can_resolv
                 "ip": ip,
                 "port": port,
                 "alpn": alpn,
-                "isp_aioquic": aioquic_handshake_probe(ip, host, port=port, alpn=alpn, source_ip=src_ip),
-                "isp_http3": quic_curl_probe(url, host, ip, source_ip=src_ip) if url else None,
+                "isp_aioquic": aioquic_handshake_probe(ip, host, port=port, alpn=alpn, source_ip=src_ip, iface=isp_iface),
+                "isp_http3": quic_curl_probe(url, host, ip, source_ip=src_ip, iface=isp_iface) if url else None,
             })
 
         ntp_results = []
@@ -255,16 +254,16 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, control_dns="1.1.1.1", can_resolv
             ip = resolve_target_ip(host, control_dns, can_resolve)
             if not ip:
                 continue
-            ntp_results.append({"host": host, "ip": ip, "isp": ntp_probe(ip, source_ip=src_ip)})
+            ntp_results.append({"host": host, "ip": ip, "isp": ntp_probe(ip, source_ip=src_ip, iface=isp_iface)})
 
         stun_results = []
         for label, host, port in STUN_SERVERS:
             ip = resolve_target_ip(host, control_dns, can_resolve)
             if not ip:
                 continue
-            stun_results.append({"label": label, "host": host, "port": port, "ip": ip, "isp": stun_probe(ip, port, source_ip=src_ip)})
+            stun_results.append({"label": label, "host": host, "port": port, "ip": ip, "isp": stun_probe(ip, port, source_ip=src_ip, iface=isp_iface)})
 
-        pmtu_isp = pmtu_sweep("1.1.1.1", source_ip=src_ip)
+        pmtu_isp = pmtu_sweep("1.1.1.1", source_ip=src_ip, iface=isp_iface)
 
     return {
         "portquiz_ip": pq_ip,

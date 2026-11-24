@@ -49,12 +49,43 @@ def _load_compare_runs(compare_dirs):
     history = []
     for raw_p in compare_dirs or []:
         p = pathlib.Path(raw_p).expanduser().resolve()
-        cand = p / "raw_data" / "07_aggregated_metrics.json"
-        if not cand.exists() and p.name == "07_aggregated_metrics.json":
-            cand = p
-        if not cand.exists():
+        cand = p
+        if not p.is_file():
+            for rel in (
+                pathlib.Path("raw_data/07_aggregated_metrics.json"),
+                pathlib.Path("evidence/raw_data/07_aggregated_metrics.json"),
+                pathlib.Path("raw_data/06_aggregated_metrics.json"),
+                pathlib.Path("evidence/raw_data/06_aggregated_metrics.json"),
+            ):
+                if (p / rel).exists():
+                    cand = p / rel
+                    break
+        if not cand.exists() or not cand.is_file():
             continue
         prev = json.loads(cand.read_text(encoding="utf-8"))
+        if "pcap_dpi_timing_ttl" in prev:
+            timing = prev.get("pcap_dpi_timing_ttl", {})
+            n_ev = timing.get("n_events", 0)
+            n_low = timing.get("n_low_ttl_60", 0)
+            dom_share = round(100.0 * n_low / n_ev, 1) if n_ev else 0.0
+            prov = prev.get("cloud_provider_breakdown", {})
+            total_c = sum(sum(v.values()) for v in prov.values())
+            ok_c = sum(v.get("ok", 0) for v in prov.values())
+            dis_c = max(0, total_c - ok_c)
+            mech = prev.get("mechanisms", {})
+            history.append({
+                "label": "2026-11-13 (V1 Baseline)",
+                "timestamp": "2026-11-13T08:25:24+00:00",
+                "ip": "5.213.x.x",
+                "rst_events": n_ev,
+                "cloud_fail_pct": round(100.0 * dis_c / max(1, total_c), 1),
+                "cloud_fail_count": dis_c,
+                "cloud_total": max(1, total_c),
+                "dns_sinkholes": mech.get("DNS Sinkhole (10.10.34.36)", 0),
+                "dominant_ttl_share_pct": dom_share,
+                "median_rst_ms": timing.get("median_rst_delay_ms"),
+            })
+            continue
         meta = prev.get("session_meta", {})
         rst = prev.get("pcap_dpi_rst", {})
         cld = prev.get("cloud_summary", {})

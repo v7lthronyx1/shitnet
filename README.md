@@ -97,6 +97,12 @@ sudo .venv/bin/shitnet run --mode two-phase --conn-type "USB Tether"
 .venv/bin/shitnet run --mode dual --compare ./audits/session_1 ./audits/session_2
 ```
 
+### Audit Direct ISP Interface Behind an Active VPN (Zero Route Changes)
+
+```bash
+.venv/bin/shitnet run --mode dual --iface eth0 --control-dns 127.0.2.1 --no-auto-route --conn-type "Ethernet / USB Tether"
+```
+
 ### Re-render Reports, PDFs & Social Packages from Existing Captures
 
 ```bash

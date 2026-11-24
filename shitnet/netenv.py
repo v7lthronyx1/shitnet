@@ -30,7 +30,9 @@ def list_ipv4_interfaces():
                 if a.get("family") == "inet" and a.get("local"):
                     addrs.append((a["local"], a.get("prefixlen", 24)))
             if addrs:
-                is_vpn = low.startswith(VPN_PREFIXES)
+                if addrs[0][0].startswith("127."):
+                    continue
+                is_vpn = low.startswith(VPN_PREFIXES) or low.endswith("_tun") or low.startswith(("surfshark_tun", "windscribe", "amnezia"))
                 if not is_vpn and state == "DOWN":
                     continue
                 ifaces[name] = {
@@ -101,7 +103,18 @@ def detect_interface_dns(iface_name, fallback_gw=None):
     return found
 
 
-def pick_isp_dns(gw_ip, iface_dns=None, source_ip=None):
+def bind_socket(sock, source_ip=None, iface=None):
+    if iface and hasattr(socket, "SO_BINDTODEVICE"):
+        try:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, iface.encode("ascii") + b"\x00")
+            return
+        except OSError:
+            pass
+    if source_ip:
+        sock.bind((source_ip, 0))
+
+
+def pick_isp_dns(gw_ip, iface_dns=None, source_ip=None, iface=None):
     if gw_ip:
         s = None
         try:
@@ -109,8 +122,7 @@ def pick_isp_dns(gw_ip, iface_dns=None, source_ip=None):
             q = dns.message.make_query("example.com", "A").to_wire()
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(1.2)
-            if source_ip:
-                s.bind((source_ip, 0))
+            bind_socket(s, source_ip=source_ip, iface=iface)
             s.sendto(q, (gw_ip, 53))
             wire, _ = s.recvfrom(2048)
             if wire:
@@ -177,7 +189,8 @@ def check_system_capabilities():
     }
 
 
-def fetch_public_ip(source_ip=None, timeout=8):
+def fetch_public_ip(source_ip=None, timeout=8, iface=None):
+    bind_dev = iface or source_ip
     endpoints = [
         ("https://api.ipify.org", "api.ipify.org", "104.26.13.205"),
         ("https://ifconfig.me/ip", "ifconfig.me", "34.160.111.145"),
@@ -185,8 +198,8 @@ def fetch_public_ip(source_ip=None, timeout=8):
     ]
     for url, host, fallback_ip in endpoints:
         cmd = ["curl", "-4", "-sS", "--max-time", str(timeout)]
-        if source_ip:
-            cmd += ["--interface", source_ip]
+        if bind_dev:
+            cmd += ["--interface", bind_dev]
         cmd.append(url)
         p = subprocess.run(cmd, capture_output=True, text=True)
         if p.returncode == 0:
@@ -194,8 +207,8 @@ def fetch_public_ip(source_ip=None, timeout=8):
             if re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$", ip):
                 return ip
         cmd_res = ["curl", "-4", "-sS", "--max-time", str(timeout), "--resolve", f"{host}:443:{fallback_ip}"]
-        if source_ip:
-            cmd_res += ["--interface", source_ip]
+        if bind_dev:
+            cmd_res += ["--interface", bind_dev]
         cmd_res.append(url)
         p2 = subprocess.run(cmd_res, capture_output=True, text=True)
         if p2.returncode == 0:
@@ -205,9 +218,10 @@ def fetch_public_ip(source_ip=None, timeout=8):
     return ""
 
 
-def fetch_json_path(url, source_ip=None, timeout=8):
-    if source_ip:
-        cmd = ["curl", "-4", "-sS", "--max-time", str(timeout), "--interface", source_ip, url]
+def fetch_json_path(url, source_ip=None, timeout=8, iface=None):
+    bind_dev = iface or source_ip
+    if bind_dev:
+        cmd = ["curl", "-4", "-sS", "--max-time", str(timeout), "--interface", bind_dev, url]
         p = subprocess.run(cmd, capture_output=True, text=True)
         if p.returncode == 0 and p.stdout.strip():
             try:
@@ -222,12 +236,12 @@ def fetch_json_path(url, source_ip=None, timeout=8):
         return {"error": str(e)}
 
 
-def detect_isp_identity(public_ip, meta_source_ip=None, operator_override=None):
+def detect_isp_identity(public_ip, meta_source_ip=None, operator_override=None, meta_iface=None):
     ipinfo = {}
     ripe = {}
     if public_ip:
-        ipinfo = fetch_json_path(f"https://ipinfo.io/{public_ip}/json", source_ip=meta_source_ip)
-        ripe = fetch_json_path(f"https://stat.ripe.net/data/prefix-overview/data.json?resource={public_ip}", source_ip=meta_source_ip)
+        ipinfo = fetch_json_path(f"https://ipinfo.io/{public_ip}/json", source_ip=meta_source_ip, iface=meta_iface)
+        ripe = fetch_json_path(f"https://stat.ripe.net/data/prefix-overview/data.json?resource={public_ip}", source_ip=meta_source_ip, iface=meta_iface)
 
     raw_asn = ""
     org_name = str(ipinfo.get("org", "") or "")

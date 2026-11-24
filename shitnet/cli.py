@@ -261,7 +261,7 @@ def _build_default_cfg(args, topo):
     selected = next((x for x in topo["interfaces"] if x["name"] == iface), isp)
     src_ip = args.src_ip or selected.get("ip")
     gw_ip = args.gw_ip or selected.get("gateway")
-    gw_dns = args.gw_dns or pick_isp_dns(gw_ip, selected.get("dns"), source_ip=src_ip)
+    gw_dns = args.gw_dns or pick_isp_dns(gw_ip, selected.get("dns"), source_ip=src_ip, iface=iface)
     vpn_dns = args.vpn_dns or ((vpn.get("dns") or [None])[0]) or "1.1.1.1"
     ts_dir = datetime.now(timezone.utc).strftime("audit_%Y%m%d_%H%M%SZ") + f"_{iface}"
     out = args.out or str(pathlib.Path.cwd() / "audits" / ts_dir)
@@ -331,7 +331,7 @@ def cmd_wizard(_args):
         "iface": sel["name"],
         "src_ip": sel["ip"],
         "gw_ip": sel["gateway"],
-        "gw_dns": pick_isp_dns(sel["gateway"], sel.get("dns"), source_ip=sel["ip"]),
+        "gw_dns": pick_isp_dns(sel["gateway"], sel.get("dns"), source_ip=sel["ip"], iface=sel["name"]),
         "vpn_dns": _pick_control_dns(topo),
         "vpn_dns_explicit": None,
         "conn_type": conn_type,

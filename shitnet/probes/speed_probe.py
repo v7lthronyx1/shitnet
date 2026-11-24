@@ -8,7 +8,8 @@ from ..targets import FASTLY_POP_THRESHOLDS, SPEED_TARGETS
 from . import capture_pcap
 
 
-def curl_transfer(url, host, port, ip, rng=None, max_time=18, source_ip=None):
+def curl_transfer(url, host, port, ip, rng=None, max_time=18, source_ip=None, iface=None):
+    bind_dev = iface or source_ip
     cmd = [
         "curl", "-4", "-L", "-sS", "-k", "-A", "Mozilla/5.0",
         "--max-time", str(max_time),
@@ -16,8 +17,8 @@ def curl_transfer(url, host, port, ip, rng=None, max_time=18, source_ip=None):
         "-o", "/dev/null",
         "-w", "%{http_code} %{size_download} %{speed_download} %{time_connect} %{time_appconnect} %{time_starttransfer} %{time_total}",
     ]
-    if source_ip:
-        cmd += ["--interface", source_ip]
+    if bind_dev:
+        cmd += ["--interface", bind_dev]
     if rng:
         cmd += ["-r", rng]
     cmd.append(url)
@@ -39,10 +40,11 @@ def curl_transfer(url, host, port, ip, rng=None, max_time=18, source_ip=None):
     return {"rc": p.returncode, "http_code": 0, "bytes": 0, "mbps": 0.0, "connect_s": 0.0, "tls_s": 0.0, "ttfb_s": 0.0, "total_s": 0.0, "err": p.stderr.strip()[:140]}
 
 
-def ping_burst(ip, count=40, source_ip=None):
+def ping_burst(ip, count=40, source_ip=None, iface=None):
     cmd = ["ping", "-n", "-i", "0.2", "-c", str(count), "-W", "2"]
-    if source_ip:
-        cmd += ["-I", source_ip]
+    bind_dev = iface or source_ip
+    if bind_dev:
+        cmd += ["-I", bind_dev]
     cmd.append(ip)
     p = subprocess.run(cmd, capture_output=True, text=True)
     rtts = [float(x) for x in re.findall(r"time=([\d.]+)\s*ms", p.stdout)]
@@ -84,7 +86,7 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, gw_ip, progress_cb=None):
         for idx, (label, url, host, port, ip, rng, mt) in enumerate(SPEED_TARGETS):
             if progress_cb:
                 progress_cb(f"[Stage 5/6 Speed] Benchmark {idx + 1}/{len(SPEED_TARGETS)}: {label}...")
-            isp = curl_transfer(url, host, port, ip, rng=rng, max_time=mt, source_ip=src_ip)
+            isp = curl_transfer(url, host, port, ip, rng=rng, max_time=mt, source_ip=src_ip, iface=isp_iface)
             speed_rows.append({"label": label, "url": url, "host": host, "port": port, "ip": ip, "rng": rng, "mt": mt, "isp": isp})
 
         if progress_cb:
@@ -95,12 +97,12 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, gw_ip, progress_cb=None):
                 use_ranges = ranges if scheme == "http" else [None, "0-4095", "0-20479"]
                 for rng in use_ranges:
                     url = f"{scheme}://deb.debian.org/debian/dists/stable/Release"
-                    isp = curl_transfer(url, "deb.debian.org", port, ip, rng=rng, max_time=10, source_ip=src_ip)
+                    isp = curl_transfer(url, "deb.debian.org", port, ip, rng=rng, max_time=10, source_ip=src_ip, iface=isp_iface)
                     fastly_thresholds.append({"ip": ip, "scheme": scheme, "port": port, "range": rng or "FULL", "raw_range": rng, "isp": isp})
 
         jitter_rows = []
         for label, ip in jitter_hosts:
-            isp_j = ping_burst(ip, count=40, source_ip=src_ip)
+            isp_j = ping_burst(ip, count=40, source_ip=src_ip, iface=isp_iface)
             jitter_rows.append({"label": label, "ip": ip, "isp": isp_j})
 
     return {

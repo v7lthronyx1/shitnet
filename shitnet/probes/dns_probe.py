@@ -9,12 +9,12 @@ import dns.message
 import dns.rcode
 import dns.rdatatype
 import requests
-from ..netenv import detect_isp_identity, derive_connection_type, fetch_public_ip, is_private_or_reserved
+from ..netenv import bind_socket, detect_isp_identity, derive_connection_type, fetch_public_ip, is_private_or_reserved
 from ..targets import DOMAINS, FALLBACK_DOMAIN_IPS, STATIC_RESOLVERS
 from . import capture_pcap, resolve_control_host
 
 
-def query_dns(server_ip, domain, rtype="A", port=53, proto="udp", source_ip=None, timeout=1.6, dnssec=False):
+def query_dns(server_ip, domain, rtype="A", port=53, proto="udp", source_ip=None, timeout=1.6, dnssec=False, iface=None):
     res = {
         "ok": False,
         "rcode": None,
@@ -36,15 +36,13 @@ def query_dns(server_ip, domain, rtype="A", port=53, proto="udp", source_ip=None
         if proto == "udp":
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.settimeout(timeout)
-            if source_ip:
-                s.bind((source_ip, 0))
+            bind_socket(s, source_ip=source_ip, iface=iface)
             s.sendto(q.to_wire(), (server_ip, port))
             wire, _ = s.recvfrom(4096)
         else:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.settimeout(timeout)
-            if source_ip:
-                s.bind((source_ip, 0))
+            bind_socket(s, source_ip=source_ip, iface=iface)
             s.connect((server_ip, port))
             payload = q.to_wire()
             s.sendall(len(payload).to_bytes(2, "big") + payload)
@@ -94,14 +92,15 @@ def query_dns(server_ip, domain, rtype="A", port=53, proto="udp", source_ip=None
     return res
 
 
-def doh_direct_query(domain, source_ip=None, timeout=2.5):
+def doh_direct_query(domain, source_ip=None, timeout=2.5, iface=None):
+    bind_dev = iface or source_ip
     for srv_ip in ("1.1.1.1", "9.9.9.9"):
         cmd = [
             "curl", "-4", "-sS", "-k", "--max-time", str(timeout),
             "-H", "Accept: application/dns-json",
         ]
-        if source_ip:
-            cmd += ["--interface", source_ip]
+        if bind_dev:
+            cmd += ["--interface", bind_dev]
         cmd.append(f"https://{srv_ip}/dns-query?name={domain}&type=A")
         p = subprocess.run(cmd, capture_output=True, text=True)
         if p.returncode == 0 and p.stdout.strip():
@@ -142,27 +141,27 @@ def run_isp_phase(raw_dir, pcap_dir, isp_iface, src_ip, gw_dns, domains=None, re
 
     pcap_path = pcap_dir / "01_dns_forensics.pcapng"
     with capture_pcap(isp_iface, pcap_path, snaplen=512, progress_cb=progress_cb):
-        isp_public_ip = fetch_public_ip(source_ip=src_ip)
-        whoami = query_dns(gw_ip, "whoami.akamai.net", "TXT", 53, "udp", source_ip=src_ip)
+        isp_public_ip = fetch_public_ip(source_ip=src_ip, iface=isp_iface)
+        whoami = query_dns(gw_ip, "whoami.akamai.net", "TXT", 53, "udp", source_ip=src_ip, iface=isp_iface)
 
         resolver_matrix = []
         probe_domains = [("x.com", "A"), ("youtube.com", "A"), ("google.com", "A"), ("pages.dev", "A"), ("deb.debian.org", "A"), ("cloudflare.com", "A")]
         for label, srv, port, proto in probe_list:
             entry = {"label": label, "server": srv, "port": port, "proto": proto, "results": {}}
             for dom, rt in probe_domains:
-                entry["results"][dom] = query_dns(srv, dom, rt, port, proto, source_ip=src_ip, timeout=1.6)
+                entry["results"][dom] = query_dns(srv, dom, rt, port, proto, source_ip=src_ip, timeout=1.6, iface=isp_iface)
             resolver_matrix.append(entry)
 
         isp_domain_rows = []
         for idx, (cat, dom) in enumerate(domains):
             if progress_cb and idx % 25 == 0:
                 progress_cb(f"[Stage 1/6 DNS] Probing {idx + 1}/{len(domains)} on ISP...")
-            isp_a = query_dns(gw_ip, dom, "A", 53, "udp", source_ip=src_ip)
-            isp_quad9 = query_dns("9.9.9.9", dom, "A", 53, "udp", source_ip=src_ip, timeout=1.5)
-            isp_114 = query_dns("114.114.114.114", dom, "A", 53, "udp", source_ip=src_ip, timeout=1.5) if cat in ("search_infra", "cloud_dev_cdn", "social_video") else None
-            isp_aaaa = query_dns(gw_ip, dom, "AAAA", 53, "udp", source_ip=src_ip)
-            isp_https = query_dns(gw_ip, dom, "HTTPS", 53, "udp", source_ip=src_ip)
-            isp_dnssec = query_dns(gw_ip, dom, "A", 53, "udp", source_ip=src_ip, dnssec=True)
+            isp_a = query_dns(gw_ip, dom, "A", 53, "udp", source_ip=src_ip, iface=isp_iface)
+            isp_quad9 = query_dns("9.9.9.9", dom, "A", 53, "udp", source_ip=src_ip, timeout=1.5, iface=isp_iface)
+            isp_114 = query_dns("114.114.114.114", dom, "A", 53, "udp", source_ip=src_ip, timeout=1.5, iface=isp_iface) if cat in ("search_infra", "cloud_dev_cdn", "social_video") else None
+            isp_aaaa = query_dns(gw_ip, dom, "AAAA", 53, "udp", source_ip=src_ip, iface=isp_iface)
+            isp_https = query_dns(gw_ip, dom, "HTTPS", 53, "udp", source_ip=src_ip, iface=isp_iface)
+            isp_dnssec = query_dns(gw_ip, dom, "A", 53, "udp", source_ip=src_ip, dnssec=True, iface=isp_iface)
             isp_domain_rows.append({
                 "category": cat,
                 "domain": dom,
@@ -174,7 +173,7 @@ def run_isp_phase(raw_dir, pcap_dir, isp_iface, src_ip, gw_dns, domains=None, re
                 "isp_dnssec": {"ad": isp_dnssec["ad"], "has_rrsig": isp_dnssec["has_rrsig"]},
             })
 
-    identity = detect_isp_identity(isp_public_ip, meta_source_ip=src_ip, operator_override=operator_override)
+    identity = detect_isp_identity(isp_public_ip, meta_source_ip=src_ip, operator_override=operator_override, meta_iface=isp_iface)
     return {
         "timestamp_utc": datetime.now(timezone.utc).isoformat(),
         "network_identity": {

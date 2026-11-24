@@ -7,11 +7,12 @@ import ssl
 import subprocess
 import time
 from datetime import datetime, timezone
+from ..netenv import bind_socket
 from ..targets import FALLBACK_DOMAIN_IPS, MTR_DEFAULT_TARGETS, PINNED_CLOUD_ENDPOINTS
 from . import capture_pcap, resolve_control_host
 
 
-def tcp_tls_probe(ip, sni, source_ip=None, timeout=4.2):
+def tcp_tls_probe(ip, sni, source_ip=None, timeout=4.2, iface=None):
     out = {"tcp_ok": False, "tls_ok": False, "tcp_ms": None, "tls_ms": None, "error": None}
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
@@ -20,8 +21,7 @@ def tcp_tls_probe(ip, sni, source_ip=None, timeout=4.2):
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         s.settimeout(timeout)
-        if source_ip:
-            s.bind((source_ip, 0))
+        bind_socket(s, source_ip=source_ip, iface=iface)
         t0 = time.monotonic()
         s.connect((ip, 443))
         out["tcp_ok"] = True
@@ -41,10 +41,11 @@ def tcp_tls_probe(ip, sni, source_ip=None, timeout=4.2):
     return out
 
 
-def ping_loss(ip, source_ip=None, count=3):
+def ping_loss(ip, source_ip=None, count=3, iface=None):
     cmd = ["ping", "-n", "-c", str(count), "-W", "2"]
-    if source_ip:
-        cmd += ["-I", source_ip]
+    bind_dev = iface or source_ip
+    if bind_dev:
+        cmd += ["-I", bind_dev]
     cmd.append(ip)
     p = subprocess.run(cmd, capture_output=True, text=True)
     loss = 100.0
@@ -58,9 +59,11 @@ def ping_loss(ip, source_ip=None, count=3):
     return {"loss_pct": loss, "avg_ms": avg_ms}
 
 
-def run_mtr(ip, source_ip=None, tcp=False, count=5):
+def run_mtr(ip, source_ip=None, tcp=False, count=5, iface=None):
     cmd = ["mtr", "-rn"]
-    if source_ip:
+    if iface:
+        cmd += ["-I", iface]
+    elif source_ip:
         cmd += ["-a", source_ip]
     cmd += ["-c", str(count)]
     if tcp:
@@ -159,8 +162,8 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, control_dns=None, can_resolve_con
                     ip = FALLBACK_DOMAIN_IPS[sni][0]
             if not ip:
                 continue
-            isp = tcp_tls_probe(ip, sni, source_ip=src_ip, timeout=4.0)
-            isp_ping = ping_loss(ip, source_ip=src_ip, count=3)
+            isp = tcp_tls_probe(ip, sni, source_ip=src_ip, timeout=4.0, iface=isp_iface)
+            isp_ping = ping_loss(ip, source_ip=src_ip, count=3, iface=isp_iface)
             if not isp["tls_ok"] and len(mtr_targets) < 20:
                 mtr_targets.add((label, ip))
             isp_results.append({
@@ -178,8 +181,8 @@ def run_isp_phase(pcap_dir, isp_iface, src_ip, control_dns=None, can_resolve_con
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as ex:
             futs = {}
             for label, ip in sorted(mtr_targets):
-                futs[ex.submit(run_mtr, ip, src_ip, False, 5)] = (label, ip, "icmp")
-                futs[ex.submit(run_mtr, ip, src_ip, True, 5)] = (label, ip, "tcp443")
+                futs[ex.submit(run_mtr, ip, src_ip, False, 5, isp_iface)] = (label, ip, "icmp")
+                futs[ex.submit(run_mtr, ip, src_ip, True, 5, isp_iface)] = (label, ip, "tcp443")
             grouped = {}
             for fut in concurrent.futures.as_completed(futs):
                 label, ip, mode = futs[fut]
